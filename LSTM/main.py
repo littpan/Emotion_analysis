@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import json
+
 import numpy as np
 import pickle as pkl
 from tqdm import tqdm
@@ -16,7 +18,7 @@ from sklearn.metrics import precision_score, accuracy_score, f1_score, recall_sc
 
 
 # 超参数设置
-data_path =  './data/data.txt'              # 数据集
+data_path =  './data/train.json'              # 数据集
 vocab_path = './data/vocab.pkl'             # 词表
 save_path = './saved_dict/lstm.ckpt'        # 模型训练结果
 embedding_pretrained = \
@@ -27,8 +29,8 @@ embedding_pretrained = \
                                             # 预训练词向量
 embed = embedding_pretrained.size(1)        # 词向量维度
 dropout = 0.5                               # 随机丢弃
-num_classes = 2                             # 类别数
-num_epochs = 30                             # epoch数
+num_classes = 6                             # 类别数
+num_epochs = 15                             # epoch数
 batch_size = 128                            # mini-batch大小
 pad_size = 50                               # 每句话处理成的长度(短填长切)
 learning_rate = 1e-3                        # 学习率
@@ -45,54 +47,58 @@ def get_data():
     print('vocab',vocab)
     print(f"Vocab size: {len(vocab)}")
 
-    train,dev,test = load_dataset(data_path, pad_size, tokenizer, vocab)
+    stop_words = load_stop_words('./data/stopWords.txt')
+    train,dev,test = load_dataset(data_path, pad_size, tokenizer, vocab, stop_words = stop_words)
     return vocab, train, dev, test
 
-def load_dataset(path, pad_size, tokenizer, vocab):
-    '''
-    将路径文本文件分词并转为三元组返回
-    :param path: 文件路径
-    :param pad_size: 每个序列的大小
-    :param tokenizer: 转为字级别
+def load_stop_words(path):
+    """
+    加载停用词文件
+    :param path: 停用词文件路径
+    :return: 停用词列表
+    """
+    with open(path, 'r', encoding='utf-8') as f:
+        stop_words = [line.strip() for line in f]
+    return stop_words
+
+def load_dataset(path, pad_size, tokenizer, vocab, stop_words = None):
+    """
+    加载 JSON 格式数据集，处理停用词并转为 ID
+    :param path: 数据集路径
+    :param pad_size: 每个序列的最大长度
+    :param tokenizer: 分词器
     :param vocab: 词向量模型
-    :return: 二元组，含有字ID，标签
-    '''
+    :param stop_words: 停用词列表
+    :return: 训练集、验证集和测试集
+    """
     contents = []
-    n=0
-    with open(path, 'r', encoding='gbk') as f:
-        # tqdm可以看进度条
-        for line in tqdm(f):
-            # 默认删除字符串line中的空格、’\n’、't’等。
-            lin = line.strip()
-            if not lin:
-                continue
-            # print(lin)
-            label,content = lin.split('	####	')
-            # word_line存储每个字的id
+    with open(path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+        for item in data:
+            content, label = item
             words_line = []
-            # 分割器，分词每个字
-            token = tokenizer(content)
-            # print(token)
-            # 字的长度
-            seq_len = len(token)
+            tokens = tokenizer(content)  # 分词
+            # 去除停用词
+            if stop_words:
+                tokens = [word for word in tokens if word not in stop_words]
+            # 处理序列长度
+            seq_len = len(tokens)
             if pad_size:
-                # 如果字长度小于指定长度，则填充，否则截断
-                if len(token) < pad_size:
-                    token.extend([vocab.get(PAD)] * (pad_size - len(token)))
+                if seq_len < pad_size:
+                    tokens.extend([vocab.get(PAD)] * (pad_size - seq_len))
                 else:
-                    token = token[:pad_size]
+                    tokens = tokens[:pad_size]
                     seq_len = pad_size
-            # 将每个字映射为ID
-            # 如果在词表vocab中有word这个单词，那么就取出它的id；
-            # 如果没有，就去除UNK（未知词）对应的id，其中UNK表示所有的未知词（out of vocab）都对应该id
-            for word in token:
+            # 转为 ID
+            for word in tokens:
                 words_line.append(vocab.get(word, vocab.get(UNK)))
-            n+=1
             contents.append((words_line, int(label)))
 
+    # 划分数据集
     train, X_t = train_test_split(contents, test_size=0.4, random_state=42)
-    dev,test= train_test_split(X_t, test_size=0.5, random_state=42)
-    return train,dev,test
+    dev, test = train_test_split(X_t, test_size=0.5, random_state=42)
+    return train, dev, test
+
 # get_data()
 
 class TextDataset(Dataset):
@@ -251,7 +257,7 @@ def result_test(real, pred):
     f1 = f1_score(real, pred, average='micro')
     patten = 'test:  acc: %.4f   precision: %.4f   recall: %.4f   f1: %.4f'
     print(patten % (acc, precision, recall, f1,))
-    labels11 = ['negative', 'active']
+    labels11 = ['其他', '喜好', '悲伤', '厌恶', '愤怒', '高兴']
     disp = ConfusionMatrixDisplay(confusion_matrix=cv_conf, display_labels=labels11)
     disp.plot(cmap="Blues", values_format='')
     plt.savefig("results/reConfusionMatrix.tif", dpi=400)
@@ -294,6 +300,10 @@ if __name__ == '__main__':
 
     start_time = time.time()
     print("Loading data...")
+
+    # 加载停用词
+    stop_words = load_stop_words('./data/stopWords.txt')
+    # 加载数据集
     vocab, train_data, dev_data, test_data = get_data()
     dataloaders = {
         'train': DataLoader(TextDataset(train_data), batch_size, shuffle=True),
@@ -304,5 +314,16 @@ if __name__ == '__main__':
     print("Time usage:", time_dif)
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     model = Model().to(device)
-    init_network(model)
-    train(model, dataloaders)
+
+    # 检查数据和停用词
+    print("Sample training data examples:")
+    for data in train_data[:5]:
+        text, label = data
+        print(f"Text: {text}, Label: {label}")
+        assert isinstance(text, list), "Text should be a list of word IDs."
+        assert isinstance(label, int), "Label should be an integer."
+        assert 0 <= label <= 5, "Label out of range! Should be in [0, 5]."
+    print("Sample stop words:")
+    print(stop_words[:10])  # 查看停用词
+    # init_network(model)
+    # train(model, dataloaders)
