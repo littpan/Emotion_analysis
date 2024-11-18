@@ -19,6 +19,8 @@ from transformers import BertTokenizer
 from transformers import BertModel
 from transformers import BertForSequenceClassification
 import os
+import PySimpleGUI as sg
+from torch.nn.functional import softmax
 
 
 os.environ["HTTP_PROXY"] = "http://127.0.0.1:7890"
@@ -402,8 +404,101 @@ def dev_eval(model, data, loss_function, Result_test=False):
         result_test(labels_all, predict_all)
     return acc, loss_total / len(data)
 
+# 模型预测函数
+def predict_text(text, model, tokenizer, max_len, device):
+    """
+    使用训练好的模型对文本进行预测
+    :param text: 输入的文本
+    :param model: 加载的训练好的模型
+    :param tokenizer: BERT 分词器
+    :param max_len: 文本最大长度
+    :param device: 设备 (CPU/GPU)
+    :return: 分类标签
+    """
+    model.eval()
+    inputs = tokenizer(
+        text,
+        padding="max_length",
+        truncation=True,
+        max_length=max_len,
+        return_tensors="pt"
+    )
+    input_ids = inputs["input_ids"].to(device)
+    attention_mask = inputs["attention_mask"].to(device)
+    with torch.no_grad():
+        outputs = model(input_ids, attention_mask=attention_mask)
+        probs = softmax(outputs, dim=1).cpu().numpy()
+    pred = np.argmax(probs, axis=1)[0]
+    labels = ['其他', '喜好', '悲伤', '厌恶', '愤怒', '高兴']  # 根据您的模型定义
+    return labels[pred]
+
+# 图形界面主函数
+def main_gui(model, tokenizer, max_len, device):
+    sg.theme("LightBlue")  # 设置主题
+
+    # 定义按钮的颜色
+    button_color = ('white', '#87CEEB')  # 字体颜色为白色，背景色为深蓝色
+    button_font = ("Helvetica", 15, "bold")  # 粗体字体
+
+    # 定义菜单栏和布局
+    menu_def = [['Help', ['About...']]]
+    layout = [
+        [sg.MenubarCustom(menu_def, key='-MENU-', font='Courier 15', tearoff=True)],
+        [sg.Text('请输入文本进行情感分析:', font=("Helvetica", 15))],
+        [sg.Multiline(s=(60, 10), key='_INPUT_TEXT_', expand_x=True, background_color='#e9ecef', text_color='black')],
+        [sg.Text('分析结果：', font=("Helvetica", 15)), sg.Text('     ', key='_OUTPUT_', font=("Helvetica", 15))],
+        [
+            sg.Button('开始', font=button_font, button_color=button_color),
+            sg.Button('清空', font=button_font, button_color=button_color)
+        ]
+    ]
+
+    # 创建窗口
+    window = sg.Window(
+        '情感分析系统',
+        layout,
+        resizable=True,
+        finalize=True,
+        keep_on_top=True
+    )
+
+    while True:
+        event, values = window.read()
+
+        if event in (None, 'Exit'):
+            break
+        elif event == '开始':
+            input_text = values['_INPUT_TEXT_'].strip()
+            if input_text:
+                result = predict_text(input_text, model, tokenizer, max_len, device)
+                window['_OUTPUT_'].update(result)
+            else:
+                window['_OUTPUT_'].update('请输入有效文本')
+        elif event == '清空':
+            window['_INPUT_TEXT_'].update('')
+            window['_OUTPUT_'].update('')
+
+    window.close()
 
 
+# 主函数调用
+if __name__ == "__main__":
+    # 加载模型和分词器
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    tokenizer = BertTokenizer.from_pretrained('bert-base-chinese')
+    model = LSTMWithBERTEmbedding(
+        hidden_size=128,
+        num_classes=6,
+        num_layers=2,
+        dropout=0.5
+    )
+    model.load_state_dict(torch.load('./saved_dict/lstm.ckpt'))
+    model = model.to(device)
+
+    # 启动界面
+    main_gui(model, tokenizer, max_len=50, device=device)
+
+# 训练模型
 # if __name__ == '__main__':
 #     # 设置随机数种子，保证每次运行结果一致，不至于不能复现模型
 #     np.random.seed(1)
@@ -465,40 +560,41 @@ def dev_eval(model, data, loss_function, Result_test=False):
 #     init_network(model)
 #     train(model, dataloaders)
 
+
 # 直接加载模型并生成混淆矩阵
-if __name__ == '__main__':
-    # 设置随机数种子，保证每次运行结果一致
-    np.random.seed(1)
-    torch.manual_seed(1)
-    torch.cuda.manual_seed_all(1)
-    torch.backends.cudnn.deterministic = True  # 保证每次结果一样
-
-    start_time = time.time()
-    print("Loading test data ...")
-
-    # 加载停用词
-    stop_words = load_stop_words('./data/stopWords.txt')
-    # 加载数据集
-    vocab, train_data, dev_data, test_data = get_data(stop_words=stop_words)
-
-    # 准备测试集 DataLoader
-    test_dataloader = DataLoader(TextDataset(test_data), batch_size, shuffle=False, collate_fn=collate_fn)
-
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    model = LSTMWithBERTEmbedding(hidden_size=hidden_size,
-                                  num_classes=num_classes,
-                                  num_layers=num_layers,
-                                  dropout=dropout).to(device)
-
-    # 加载模型权重
-    model.load_state_dict(torch.load(save_path))
-    model.eval()  # 设置为评估模式
-    print("Model loaded successfully.")
-
-    # 测试并生成混淆矩阵
-    loss_function = torch.nn.CrossEntropyLoss()
-    print("Generating confusion matrix ...")
-    dev_eval(model, test_dataloader, loss_function, Result_test=True)
-
-    time_dif = get_time_dif(start_time)
-    print("Time usage:", time_dif)
+# if __name__ == '__main__':
+#     # 设置随机数种子，保证每次运行结果一致
+#     np.random.seed(1)
+#     torch.manual_seed(1)
+#     torch.cuda.manual_seed_all(1)
+#     torch.backends.cudnn.deterministic = True  # 保证每次结果一样
+#
+#     start_time = time.time()
+#     print("Loading test data ...")
+#
+#     # 加载停用词
+#     stop_words = load_stop_words('./data/stopWords.txt')
+#     # 加载数据集
+#     vocab, train_data, dev_data, test_data = get_data(stop_words=stop_words)
+#
+#     # 准备测试集 DataLoader
+#     test_dataloader = DataLoader(TextDataset(test_data), batch_size, shuffle=False, collate_fn=collate_fn)
+#
+#     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+#     model = LSTMWithBERTEmbedding(hidden_size=hidden_size,
+#                                   num_classes=num_classes,
+#                                   num_layers=num_layers,
+#                                   dropout=dropout).to(device)
+#
+#     # 加载模型权重
+#     model.load_state_dict(torch.load(save_path))
+#     model.eval()  # 设置为评估模式
+#     print("Model loaded successfully.")
+#
+#     # 测试并生成混淆矩阵
+#     loss_function = torch.nn.CrossEntropyLoss()
+#     print("Generating confusion matrix ...")
+#     dev_eval(model, test_dataloader, loss_function, Result_test=True)
+#
+#     time_dif = get_time_dif(start_time)
+#     print("Time usage:", time_dif)
