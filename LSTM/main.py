@@ -34,7 +34,7 @@ data_path = './data/train.json'  # 数据集
 vocab_path = './data/vocab.pkl'  # 词表
 # save_path = './saved_dict/lstmV2.ckpt'  # 模型训练结果
 save_full_path = './saved_dict/lstmV2_full_checkpoint.ckpt'  # 完整状态保存路径
-save_model_path = './saved_dict/lstmV2_model_weights.ckpt'   # 模型权重保存路径
+save_model_path = './saved_dict/lstmV2_model_weights.ckpt'   # 模型权重保存路径(推理用）
 embedding_pretrained = \
     torch.tensor(
         np.load(
@@ -551,68 +551,68 @@ def dev_eval(model, data, loss_function, Result_test=False):
 
 
 # 训练模型
-if __name__ == '__main__':
-    # 设置随机数种子，保证每次运行结果一致，不至于不能复现模型
-    np.random.seed(1)
-    torch.manual_seed(1)
-    torch.cuda.manual_seed_all(1)
-    torch.backends.cudnn.deterministic = True  # 保证每次结果一样
-
-    start_time = time.time()
-    print("Loading ...")
-
-    # 加载停用词
-    # stop_words = load_stop_words('./data/stopWords.txt')
-
-    # 加载数据集
-    print("Loading data with BERT vocab...")
-    vocab, train_data, dev_data, test_data, all_labels = get_data()
-
-    print(f"Sample vocab items: {list(vocab.keys())[:10]}")  # 打印词表的前10个词
-    print(f"Vocab size: {len(vocab)}")  # 打印词表大小
-
-    print(f"train_data sample: {train_data[:3]}")  # 查看训练数据的前几条
-    print(f"dev_data sample: {dev_data[:3]}")  # 查看验证数据的前几条
-    print(f"test_data sample: {test_data[:3]}")  # 查看测试数据的前几条
-
-    dataloaders = {
-        'train': DataLoader(TextDataset(train_data), batch_size, shuffle=True, collate_fn=collate_fn),
-        'dev': DataLoader(TextDataset(dev_data), batch_size, shuffle=True, collate_fn=collate_fn),
-        'test': DataLoader(TextDataset(test_data), batch_size, shuffle=True, collate_fn=collate_fn)
-    }
-
-    # 检查一个 batch 的输出
-    print("Checking DataLoader...")
-    for batch in dataloaders['train']:
-        input_ids, attention_mask, labels = batch
-        print(f"Sample input_ids: {input_ids[0]}")
-        print(f"Sample attention_mask: {attention_mask[0]}")
-        print(f"Sample label: {labels[0]}")
-        print(
-            f"Input shape: {input_ids.shape}, Attention mask shape: {attention_mask.shape}, Labels shape: {labels.shape}")
-        break
-
-    time_dif = get_time_dif(start_time)
-    print("Time usage:", time_dif)
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    model = LSTMWithBERTEmbedding(hidden_size=hidden_size,
-                                  num_classes=num_classes,
-                                  num_layers=num_layers,
-                                  dropout=dropout).to(device)
-
-    print("Testing model forward pass...")
-    for batch in dataloaders['train']:
-        input_ids, attention_mask, labels = batch
-        input_ids, attention_mask, labels = input_ids.to(device), attention_mask.to(device), labels.to(device)
-
-        # 测试模型输出
-        outputs = model(input_ids, attention_mask)
-        print(f"Output logits shape: {outputs.shape}")  # 输出形状应该为 [batch_size, num_classes]
-        print(f"Sample logits: {outputs[0]}")
-        break
-
-    init_network(model)
-    train(model, dataloaders, num_classes)
+# if __name__ == '__main__':
+#     # 设置随机数种子，保证每次运行结果一致，不至于不能复现模型
+#     np.random.seed(1)
+#     torch.manual_seed(1)
+#     torch.cuda.manual_seed_all(1)
+#     torch.backends.cudnn.deterministic = True  # 保证每次结果一样
+#
+#     start_time = time.time()
+#     print("Loading ...")
+#
+#     # 加载停用词
+#     # stop_words = load_stop_words('./data/stopWords.txt')
+#
+#     # 加载数据集
+#     print("Loading data with BERT vocab...")
+#     vocab, train_data, dev_data, test_data, all_labels = get_data()
+#
+#     print(f"Sample vocab items: {list(vocab.keys())[:10]}")  # 打印词表的前10个词
+#     print(f"Vocab size: {len(vocab)}")  # 打印词表大小
+#
+#     print(f"train_data sample: {train_data[:3]}")  # 查看训练数据的前几条
+#     print(f"dev_data sample: {dev_data[:3]}")  # 查看验证数据的前几条
+#     print(f"test_data sample: {test_data[:3]}")  # 查看测试数据的前几条
+#
+#     dataloaders = {
+#         'train': DataLoader(TextDataset(train_data), batch_size, shuffle=True, collate_fn=collate_fn),
+#         'dev': DataLoader(TextDataset(dev_data), batch_size, shuffle=True, collate_fn=collate_fn),
+#         'test': DataLoader(TextDataset(test_data), batch_size, shuffle=True, collate_fn=collate_fn)
+#     }
+#
+#     # 检查一个 batch 的输出
+#     print("Checking DataLoader...")
+#     for batch in dataloaders['train']:
+#         input_ids, attention_mask, labels = batch
+#         print(f"Sample input_ids: {input_ids[0]}")
+#         print(f"Sample attention_mask: {attention_mask[0]}")
+#         print(f"Sample label: {labels[0]}")
+#         print(
+#             f"Input shape: {input_ids.shape}, Attention mask shape: {attention_mask.shape}, Labels shape: {labels.shape}")
+#         break
+#
+#     time_dif = get_time_dif(start_time)
+#     print("Time usage:", time_dif)
+#     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+#     model = LSTMWithBERTEmbedding(hidden_size=hidden_size,
+#                                   num_classes=num_classes,
+#                                   num_layers=num_layers,
+#                                   dropout=dropout).to(device)
+#
+#     print("Testing model forward pass...")
+#     for batch in dataloaders['train']:
+#         input_ids, attention_mask, labels = batch
+#         input_ids, attention_mask, labels = input_ids.to(device), attention_mask.to(device), labels.to(device)
+#
+#         # 测试模型输出
+#         outputs = model(input_ids, attention_mask)
+#         print(f"Output logits shape: {outputs.shape}")  # 输出形状应该为 [batch_size, num_classes]
+#         print(f"Sample logits: {outputs[0]}")
+#         break
+#
+#     init_network(model)
+#     train(model, dataloaders, num_classes)
 
 
 # 直接加载模型并生成混淆矩阵
@@ -657,97 +657,100 @@ if __name__ == '__main__':
 ###################### 以下为带可视化界面部分的注释 ######################
 
 # 模型预测函数
-# def predict_text(text, model, tokenizer, max_len, device):
-#     """
-#     使用训练好的模型对文本进行预测
-#     :param text: 输入的文本
-#     :param model: 加载的训练好的模型
-#     :param tokenizer: BERT 分词器
-#     :param max_len: 文本最大长度
-#     :param device: 设备 (CPU/GPU)
-#     :return: 分类标签
-#     """
-#     model.eval()
-#     inputs = tokenizer(
-#         text,
-#         padding="max_length",
-#         truncation=True,
-#         max_length=max_len,
-#         return_tensors="pt"
-#     )
-#     input_ids = inputs["input_ids"].to(device)
-#     attention_mask = inputs["attention_mask"].to(device)
-#     with torch.no_grad():
-#         outputs = model(input_ids, attention_mask=attention_mask)
-#         probs = softmax(outputs, dim=1).cpu().numpy()
-#     pred = np.argmax(probs, axis=1)[0]
-#     labels = ['其他', '喜好', '悲伤', '厌恶', '愤怒', '高兴']  # 根据您的模型定义
-#     return labels[pred]
-#
-# # 图形界面主函数
-# def main_gui(model, tokenizer, max_len, device):
-#     sg.theme("LightBlue")  # 设置主题
-#
-#     # 定义按钮的颜色
-#     button_color = ('white', '#87CEEB')  # 字体颜色为白色，背景色为深蓝色
-#     button_font = ("Helvetica", 15, "bold")  # 粗体字体
-#
-#     # 定义菜单栏和布局
-#     menu_def = [['Help', ['About...']]]
-#     layout = [
-#         [sg.MenubarCustom(menu_def, key='-MENU-', font='Courier 15', tearoff=True)],
-#         [sg.Text('请输入文本进行情感分析:', font=("Helvetica", 15))],
-#         [sg.Multiline(s=(60, 10), key='_INPUT_TEXT_', expand_x=True, background_color='#e9ecef', text_color='black')],
-#         [sg.Text('分析结果：', font=("Helvetica", 15)), sg.Text('     ', key='_OUTPUT_', font=("Helvetica", 15))],
-#         [
-#             sg.Button('开始', font=button_font, button_color=button_color),
-#             sg.Button('清空', font=button_font, button_color=button_color)
-#         ]
-#     ]
-#
-#     # 创建窗口
-#     window = sg.Window(
-#         '情感分析系统',
-#         layout,
-#         resizable=True,
-#         finalize=True,
-#         keep_on_top=True
-#     )
-#
-#     while True:
-#         event, values = window.read()
-#
-#         if event in (None, 'Exit'):
-#             break
-#         elif event == '开始':
-#             input_text = values['_INPUT_TEXT_'].strip()
-#             if input_text:
-#                 result = predict_text(input_text, model, tokenizer, max_len, device)
-#                 window['_OUTPUT_'].update(result)
-#             else:
-#                 window['_OUTPUT_'].update('请输入有效文本')
-#         elif event == '清空':
-#             window['_INPUT_TEXT_'].update('')
-#             window['_OUTPUT_'].update('')
-#
-#     window.close()
-#
-#
-# # 主函数（带可视化界面）
-# if __name__ == "__main__":
-#     # 加载模型和分词器
-#     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-#     tokenizer = BertTokenizer.from_pretrained('bert-base-chinese')
-#     model = LSTMWithBERTEmbedding(
-#         hidden_size=128,
-#         num_classes=6,
-#         num_layers=2,
-#         dropout=0.5
-#     )
-#     model.load_state_dict(torch.load('./saved_dict/lstm.ckpt'))
-#     model = model.to(device)
-#
-#     # 启动界面
-#     main_gui(model, tokenizer, max_len=50, device=device)
+def predict_text(text, model, tokenizer, max_len, device):
+    """
+    使用训练好的模型对文本进行预测
+    :param text: 输入的文本
+    :param model: 加载的训练好的模型
+    :param tokenizer: BERT 分词器
+    :param max_len: 文本最大长度
+    :param device: 设备 (CPU/GPU)
+    :return: 分类标签
+    """
+    model.eval()
+    inputs = tokenizer(
+        text,
+        padding="max_length",
+        truncation=True,
+        max_length=max_len,
+        return_tensors="pt"
+    )
+    input_ids = inputs["input_ids"].to(device)
+    attention_mask = inputs["attention_mask"].to(device)
+    with torch.no_grad():
+        outputs = model(input_ids, attention_mask=attention_mask)
+        probs = softmax(outputs, dim=1).cpu().numpy()
+    pred = np.argmax(probs, axis=1)[0]
+    labels = ['其他', '喜好', '悲伤', '厌恶', '愤怒', '高兴']  # 根据您的模型定义
+    return labels[pred]
+
+# 图形界面主函数
+def main_gui(model, tokenizer, max_len, device):
+    sg.theme("LightBlue")  # 设置主题
+
+    # 定义按钮的颜色
+    button_color = ('white', '#87CEEB')  # 字体颜色为白色，背景色为深蓝色
+    button_font = ("Helvetica", 15, "bold")  # 粗体字体
+
+    # 定义菜单栏和布局
+    menu_def = [['Help', ['About...']]]
+    layout = [
+        [sg.MenubarCustom(menu_def, key='-MENU-', font='Courier 15', tearoff=True)],
+        [sg.Text('请输入文本进行情感分析:', font=("Helvetica", 15))],
+        [sg.Multiline(s=(60, 10), key='_INPUT_TEXT_', expand_x=True, background_color='#e9ecef', text_color='black')],
+        [sg.Text('分析结果：', font=("Helvetica", 15)), sg.Text('     ', key='_OUTPUT_', font=("Helvetica", 15))],
+        [
+            sg.Button('开始', font=button_font, button_color=button_color),
+            sg.Button('清空', font=button_font, button_color=button_color)
+        ]
+    ]
+
+    # 创建窗口
+    window = sg.Window(
+        '情感分析系统',
+        layout,
+        resizable=True,
+        finalize=True,
+        keep_on_top=True
+    )
+
+    while True:
+        event, values = window.read()
+
+        if event in (None, 'Exit'):
+            break
+        elif event == '开始':
+            input_text = values['_INPUT_TEXT_'].strip()
+            if input_text:
+                result = predict_text(input_text, model, tokenizer, max_len, device)
+                window['_OUTPUT_'].update(result)
+            else:
+                window['_OUTPUT_'].update('请输入有效文本')
+        elif event == '清空':
+            window['_INPUT_TEXT_'].update('')
+            window['_OUTPUT_'].update('')
+
+    window.close()
+
+
+# 主函数（带可视化界面）
+if __name__ == "__main__":
+    # 设备设置
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+
+    # 加载分词器和模型
+    tokenizer = BertTokenizer.from_pretrained('bert-base-chinese', timeout=60)
+    model = LSTMWithBERTEmbedding(
+        hidden_size=hidden_size,
+        num_classes=num_classes,
+        num_layers=num_layers,
+        dropout=dropout
+    )
+    model.load_state_dict(torch.load(save_model_path))  # 加载模型权重
+    model = model.to(device)  # 模型迁移到设备
+
+    # 启动界面
+    print("Launching GUI...")
+    main_gui(model, tokenizer, max_len=pad_size, device=device)
 
 
