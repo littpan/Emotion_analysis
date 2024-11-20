@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import json
-
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import StepLR
 import numpy as np
 import pickle as pkl
 from tqdm import tqdm
@@ -21,6 +22,7 @@ from transformers import BertForSequenceClassification
 import os
 import PySimpleGUI as sg
 from torch.nn.functional import softmax
+from collections import Counter
 
 
 os.environ["HTTP_PROXY"] = "http://127.0.0.1:7890"
@@ -30,7 +32,9 @@ os.environ["https_proxy"] = "http://127.0.0.1:7890"
 # 超参数设置
 data_path = './data/train.json'  # 数据集
 vocab_path = './data/vocab.pkl'  # 词表
-save_path = './saved_dict/lstm.ckpt'  # 模型训练结果
+# save_path = './saved_dict/lstmV2.ckpt'  # 模型训练结果
+save_full_path = './saved_dict/lstmV2_full_checkpoint.ckpt'  # 完整状态保存路径
+save_model_path = './saved_dict/lstmV2_model_weights.ckpt'   # 模型权重保存路径
 embedding_pretrained = \
     torch.tensor(
         np.load(
@@ -38,7 +42,7 @@ embedding_pretrained = \
         ["embeddings"].astype('float32'))
 # 预训练词向量
 embed = embedding_pretrained.size(1)  # 词向量维度
-dropout = 0.5  # 随机丢弃
+dropout = 0.3  # 随机丢弃
 num_classes = 6  # 类别数
 num_epochs = 15  # epoch数
 batch_size = 128  # mini-batch大小
@@ -50,7 +54,7 @@ MAX_VOCAB_SIZE = 10000  # 词表长度限制
 UNK, PAD = '<UNK>', '<PAD>'  # 未知字，padding符号
 
 
-def get_data(stop_words):
+def get_data():
     # tokenizer = lambda x: [y for y in x]  # 字级别
     # vocab = pkl.load(open(vocab_path, 'rb'))
     tokenizer = BertTokenizer.from_pretrained('bert-base-chinese', timeout=60)  # 加载 BERT 分词器
@@ -63,14 +67,29 @@ def get_data(stop_words):
 
     def tokenize_and_convert_to_ids(text):
         # 先去除停用词
-        text = ''.join([word for word in text if word not in stop_words])
+        # text = ''.join([word for word in text if word not in stop_words])
         # 使用 BERT 分词器分词并转换为 ID
         tokenized = tokenizer.tokenize(text)
         token_ids = tokenizer.convert_tokens_to_ids(tokenized)
         return token_ids
 
-    train, dev, test = load_dataset(data_path, pad_size, tokenizer, vocab, stop_words)
-    return vocab, train, dev, test
+
+    train, dev, test = load_dataset(data_path, pad_size, tokenizer, vocab)
+    # return vocab, train, dev, test
+
+    # 提取所有标签用于计算权重
+    all_labels = []
+    for dataset_name, dataset in [("train", train), ("dev", dev), ("test", test)]:
+        for _, label in dataset:
+            if isinstance(label, (list, torch.Tensor)):  # 展平嵌套标签
+                all_labels.extend(label if isinstance(label, list) else label.tolist())
+            else:
+                all_labels.append(label)
+    print(f"get_data()--展平后的标签数量: {len(all_labels)}, 标签分布: {Counter(all_labels)}")
+
+    # 提取所有标签用于计算权重
+    # all_labels = [label for dataset in [train, dev, test] for _, label in dataset]
+    return vocab, train, dev, test, all_labels
 
 
 def load_stop_words(path):
@@ -84,7 +103,7 @@ def load_stop_words(path):
     return stop_words
 
 
-def load_dataset(path, pad_size, tokenizer, vocab, stop_words=None):
+def load_dataset(path, pad_size, tokenizer, vocab):
     """
     加载 JSON 格式数据集，处理停用词并转为 ID
     :param path: 数据集路径
@@ -100,7 +119,7 @@ def load_dataset(path, pad_size, tokenizer, vocab, stop_words=None):
         for item in data:
             content, label = item
             tokens = tokenizer.tokenize(content)  # 分词
-            tokens = [token for token in tokens if token not in stop_words]  # 去停用词
+            # tokens = [token for token in tokens if not stop_words or token not in stop_words] # 去停用词
             tokens = ['[CLS]'] + tokens[:pad_size - 2] + ['[SEP]']  # 截断并添加特殊符号
             token_ids = tokenizer.convert_tokens_to_ids(tokens)  # 转为 ID
             # 处理 None 值，替换为 PAD（通常是0）
@@ -113,6 +132,11 @@ def load_dataset(path, pad_size, tokenizer, vocab, stop_words=None):
     # 数据集划分
     train, X_t = train_test_split(contents, test_size=0.4, random_state=42)
     dev, test = train_test_split(X_t, test_size=0.5, random_state=42)
+    # 打印每个数据集的样本数和标签分布
+    for split_name, dataset in [("train", train), ("dev", dev), ("test", test)]:
+        labels = [label for _, label in dataset]
+        print(f"{split_name} 数据集: 样本数={len(dataset)}, 标签分布={Counter(labels)}")
+
     return train, dev, test
 
 
@@ -159,7 +183,16 @@ class LSTMWithBERTEmbedding(torch.nn.Module):
         self.bert = BertModel.from_pretrained('bert-base-chinese')
         # 冻结/解冻 BERT 参数（False/True）
         for param in self.bert.parameters():
-            param.requires_grad = False
+            param.requires_grad = True
+
+        # 解冻 BERT 最后一层参数
+        # for name, param in self.bert.named_parameters():
+        #     param.requires_grad = 'layer.11' in name or 'pooler' in name or 'cls' in name
+
+        # # 解冻部分 BERT 参数
+        # for name, param in model.bert.named_parameters():
+        #     if 'encoder.layer.8' in name or 'encoder.layer.9' in name:
+        #         param.requires_grad = True  # 解冻第 8 层及以上层参数
 
         # 定义 LSTM
         self.lstm = torch.nn.LSTM(
@@ -171,17 +204,24 @@ class LSTMWithBERTEmbedding(torch.nn.Module):
             bidirectional=True
         )
         # 分类器
-        self.fc = torch.nn.Linear(hidden_size * 2, num_classes)  # 双向 LSTM 输出维度翻倍
+        self.fc = torch.nn.Linear(hidden_size * 2 * 2, num_classes)  # 双向 LSTM 输出维度翻倍，且池化增加维度
 
     def forward(self, input_ids, attention_mask):
         # with torch.no_grad():  # 不使用 torch.no_grad，让 BERT 的参数在训练时更新
-        bert_output = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+        bert_output = self.bert(input_ids=input_ids, attention_mask=attention_mask) # BERT 提取序列嵌入
         embeddings = bert_output.last_hidden_state  # 使用最后一层隐状态作为输入
         lstm_output, _ = self.lstm(embeddings)  # 经过 LSTM 层
-        # 使用全序列的最大池化
-        # pooled_output = torch.max(lstm_output, dim=1).values
-        # logits = self.fc(pooled_output)
-        logits = self.fc(lstm_output[:, -1, :])  # 使用最后一个时间步的输出进行分类
+
+        # 新的池化方法：结合全局最大池化和全局平均池化
+        max_pooled = torch.max(lstm_output, dim=1).values  # 最大池化
+        mean_pooled = torch.mean(lstm_output, dim=1)  # 平均池化
+
+        # 拼接池化结果
+        pooled_output = torch.cat([max_pooled, mean_pooled], dim=1)
+
+        # 分类器
+        logits = self.fc(pooled_output)
+        # logits = self.fc(lstm_output[:, -1, :])  # 使用最后一个时间步的输出进行分类
         return logits
 
 
@@ -226,11 +266,44 @@ def plot_loss(train_loss):
     plt.legend(loc='best')
     plt.savefig('results/loss.png', dpi=400)
 
+def calculate_class_weights(labels, num_classes):
+    flattened_labels = []
+    for label in labels:
+        if isinstance(label, torch.Tensor):
+            flattened_labels.extend(label.flatten().tolist())
+        else:
+            flattened_labels.append(label)
+
+    labels = flattened_labels
+    labels = [int(label) for label in labels]
+
+    # 统计类别数量
+    class_counts = [0] * num_classes
+    total_samples = len(labels)
+
+    print(f"calculate_class_weights()--展平后的标签数量: {len(labels)}, 标签分布: {Counter(labels)}")  # 调试打印
+
+    # 统计每个类别的样本数量
+    for label in labels:
+        class_counts[label] += 1
+
+    # 计算类别权重
+    class_weights = []
+    for c in range(num_classes):
+        if class_counts[c] == 0:
+            print(f"警告: 类别 {c} 没有样本！")
+            class_weights.append(0)
+        else:
+            class_weights.append(total_samples / (num_classes * class_counts[c]))
+
+    return torch.tensor(class_weights, dtype=torch.float)
+
 
 def collate_fn(batch):
     # print("Start collate_fn")
     input_ids = [item[0] for item in batch]
     labels = [item[1] for item in batch]
+    # print(f"Raw labels: {labels}")  # 检查标签的原始内容
     max_len = max(len(ids) for ids in input_ids)
 
     # Padding input_ids 和 attention_mask
@@ -240,32 +313,70 @@ def collate_fn(batch):
         # 替换 None 为 pad_token（通常是 0）
         padded_ids = [id if id is not None else 0 for id in ids] + [0] * (max_len - len(ids))
         attention_mask = [1 if id != 0 else 0 for id in padded_ids]  # 0作为填充token
-        # padded_mask = attention_mask + [0] * (max_len - len(attention_mask))
         padded_input_ids.append(padded_ids)
         attention_masks.append(attention_mask)
 
     # print("End collate_fn")
+    # print(f"Batch input shape: {len(padded_input_ids)}, Label shape: {len(labels)}")  # 调试打印
     return torch.tensor(padded_input_ids), torch.tensor(attention_masks), torch.tensor(labels)
 
 
 # 定义训练的过程
-def train(model, dataloaders):
+def train(model, dataloaders, num_classes):
     '''
     训练模型
     :param model: 模型
     :param dataloaders: 处理后的数据，包含trian,dev,test
     '''
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    loss_function = torch.nn.CrossEntropyLoss()
+    # device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
-    dev_best_loss = float('inf')
+    # train_labels = []
+    # for batch in dataloaders['train']:
+    #     # 打印batch的结构，查看标签的位置
+    #     print(batch)
+    #
+    #     # 如果是元组格式
+    #     labels = batch[2]  # 或根据实际结构修改
+    #
+    #     # 如果是字典格式
+    #     # labels = batch['labels']
+    #
+    #     train_labels.extend(labels.cpu().numpy())
 
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    # 获取训练集的标签用于计算类别权重
+    train_labels = []
+    for batch in dataloaders['train']:
+        labels = batch[2]  # 假设标签是batch的第三个元素
+        train_labels.extend(labels.cpu().numpy())  # 将标签添加到train_labels中
+
+    # 计算类别权重（仅基于训练集的标签）
+    class_weights = calculate_class_weights(train_labels, num_classes)
+
+    # 使用加权交叉熵损失函数
+    loss_function = nn.CrossEntropyLoss(weight=class_weights.to(device))
+
+    # 修改优化器与学习率
+    # 原optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = AdamW([
+        {'params': model.bert.parameters(), 'lr': 2e-5},
+        {'params': model.lstm.parameters(), 'lr': 1e-3},
+        {'params': model.fc.parameters(), 'lr': 1e-3}
+    ])
+
+    # 增加学习率调度器：每 5 个 epoch 后学习率减小为原来的 0.1 倍
+    scheduler = StepLR(optimizer, step_size=5, gamma=0.1)
+    # loss_function = torch.nn.CrossEntropyLoss()
+
+    dev_best_loss = float('inf') # 初始化最佳验证损失
+    early_stop_count = 0
+    max_early_stop = 3  # 早停计数器
+
+
     print("Start Training...\n")
     plot_train_acc = []
     plot_train_loss = []
 
-    for i in range(num_epochs):
+    for epoch in range(num_epochs):
         # 1，训练循环----------------------------------------------------------------
         # 将数据全部取完
         # 记录每一个batch
@@ -276,12 +387,17 @@ def train(model, dataloaders):
         train_lossi = 0
         train_acci = 0
         # print("进入dataloaders...\n")
-        # print(f"Total batches in dataloaders['train']: {len(dataloaders['train'])}")
-        print(f"Epoch {i + 1} Training...")
+        print(f"Total batches in dataloaders['train']: {len(dataloaders['train'])}")
+        print(f"Epoch {epoch + 1} Training...")
 
         for step, batch in enumerate(dataloaders['train']):
             # if step >= 10: # 只跑10个batch
             #     break
+
+            # inputs, attention_masks, labels = batch
+            # print(f"Step {step}: Inputs shape={inputs.shape}, Labels shape={labels.shape}")
+            # print(f"Sample labels: {labels[:5]}")  # 查看前几个标签
+            # break
 
             if step % 5 == 0:  # 每处理5个batch输出一次调试信息
                 print(f"Processing batch {step + 1}/{len(dataloaders['train'])}...")
@@ -306,32 +422,61 @@ def train(model, dataloaders):
             optimizer.step()
             # print("Optimizer step complete...")
 
-            step += 1
+            # step += 1
             true = labels.data.cpu()
             predic = torch.max(outputs.data, 1)[1].cpu()
             train_lossi += loss.item()
             train_acci += metrics.accuracy_score(true, predic)
-            # 2，验证集验证----------------------------------------------------------------
-        print("退出dataloaders...\n")
+
+        print("一轮训练的batch都处理完成，退出dataloaders...\n")
+        scheduler.step()  # 学习率调度器更新
+        print("Scheduler step complete...")
+        # 2，验证集验证----------------------------------------------------------------
         dev_acc, dev_loss = dev_eval(model, dataloaders['dev'], loss_function, Result_test=False)
-        if dev_loss < dev_best_loss:
-            dev_best_loss = dev_loss
-            torch.save(model.state_dict(), save_path)
-        train_acc = train_acci / step
-        train_loss = train_lossi / step
+        train_acc = train_acci / (step + 1)
+        train_loss = train_lossi / (step + 1)
         plot_train_acc.append(train_acc)
         plot_train_loss.append(train_loss)
         print("epoch = {} :  train_loss = {:.3f}, train_acc = {:.2%}, dev_loss = {:.3f}, dev_acc = {:.2%}".
-              format(i + 1, train_loss, train_acc, dev_loss, dev_acc))
+              format(epoch + 1, train_loss, train_acc, dev_loss, dev_acc))
+
+        # 保存模型权重和完整状态（包括优化器状态）
+        if dev_loss < dev_best_loss:
+            dev_best_loss = dev_loss
+            early_stop_count = 0
+            # 保存完整训练状态
+            torch.save({
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'dev_best_loss': dev_best_loss,
+            }, save_full_path)
+            # 保存仅模型权重
+            torch.save(model.state_dict(), save_model_path)
+        else:
+            early_stop_count += 1
+            if early_stop_count >= max_early_stop:
+                print(f"Early stopping triggered at epoch {epoch + 1}")
+                break
+
+
+    # 绘制训练曲线
     plot_acc(plot_train_acc)
     plot_loss(plot_train_loss)
     # 3，验证循环----------------------------------------------------------------
-    model.load_state_dict(torch.load(save_path))
+    # 加载最佳模型进行测试
+    checkpoint = torch.load(save_full_path)
+    model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
+
     start_time = time.time()
     test_acc, test_loss = dev_eval(model, dataloaders['test'], loss_function, Result_test=True)
+    elapsed_time = time.time() - start_time
+
     print('================' * 8)
-    print('test_loss: {:.3f}      test_acc: {:.2%}'.format(test_loss, test_acc))
+    print(f'Test: test_loss={test_loss:.3f}, test_acc={test_acc:.2%}')
+    print(f'Test evaluation completed in {elapsed_time:.2f} seconds.')
 
 
 def result_test(real, pred):
@@ -404,161 +549,70 @@ def dev_eval(model, data, loss_function, Result_test=False):
         result_test(labels_all, predict_all)
     return acc, loss_total / len(data)
 
-# 模型预测函数
-def predict_text(text, model, tokenizer, max_len, device):
-    """
-    使用训练好的模型对文本进行预测
-    :param text: 输入的文本
-    :param model: 加载的训练好的模型
-    :param tokenizer: BERT 分词器
-    :param max_len: 文本最大长度
-    :param device: 设备 (CPU/GPU)
-    :return: 分类标签
-    """
-    model.eval()
-    inputs = tokenizer(
-        text,
-        padding="max_length",
-        truncation=True,
-        max_length=max_len,
-        return_tensors="pt"
-    )
-    input_ids = inputs["input_ids"].to(device)
-    attention_mask = inputs["attention_mask"].to(device)
-    with torch.no_grad():
-        outputs = model(input_ids, attention_mask=attention_mask)
-        probs = softmax(outputs, dim=1).cpu().numpy()
-    pred = np.argmax(probs, axis=1)[0]
-    labels = ['其他', '喜好', '悲伤', '厌恶', '愤怒', '高兴']  # 根据您的模型定义
-    return labels[pred]
-
-# 图形界面主函数
-def main_gui(model, tokenizer, max_len, device):
-    sg.theme("LightBlue")  # 设置主题
-
-    # 定义按钮的颜色
-    button_color = ('white', '#87CEEB')  # 字体颜色为白色，背景色为深蓝色
-    button_font = ("Helvetica", 15, "bold")  # 粗体字体
-
-    # 定义菜单栏和布局
-    menu_def = [['Help', ['About...']]]
-    layout = [
-        [sg.MenubarCustom(menu_def, key='-MENU-', font='Courier 15', tearoff=True)],
-        [sg.Text('请输入文本进行情感分析:', font=("Helvetica", 15))],
-        [sg.Multiline(s=(60, 10), key='_INPUT_TEXT_', expand_x=True, background_color='#e9ecef', text_color='black')],
-        [sg.Text('分析结果：', font=("Helvetica", 15)), sg.Text('     ', key='_OUTPUT_', font=("Helvetica", 15))],
-        [
-            sg.Button('开始', font=button_font, button_color=button_color),
-            sg.Button('清空', font=button_font, button_color=button_color)
-        ]
-    ]
-
-    # 创建窗口
-    window = sg.Window(
-        '情感分析系统',
-        layout,
-        resizable=True,
-        finalize=True,
-        keep_on_top=True
-    )
-
-    while True:
-        event, values = window.read()
-
-        if event in (None, 'Exit'):
-            break
-        elif event == '开始':
-            input_text = values['_INPUT_TEXT_'].strip()
-            if input_text:
-                result = predict_text(input_text, model, tokenizer, max_len, device)
-                window['_OUTPUT_'].update(result)
-            else:
-                window['_OUTPUT_'].update('请输入有效文本')
-        elif event == '清空':
-            window['_INPUT_TEXT_'].update('')
-            window['_OUTPUT_'].update('')
-
-    window.close()
-
-
-# 主函数调用
-if __name__ == "__main__":
-    # 加载模型和分词器
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    tokenizer = BertTokenizer.from_pretrained('bert-base-chinese')
-    model = LSTMWithBERTEmbedding(
-        hidden_size=128,
-        num_classes=6,
-        num_layers=2,
-        dropout=0.5
-    )
-    model.load_state_dict(torch.load('./saved_dict/lstm.ckpt'))
-    model = model.to(device)
-
-    # 启动界面
-    main_gui(model, tokenizer, max_len=50, device=device)
 
 # 训练模型
-# if __name__ == '__main__':
-#     # 设置随机数种子，保证每次运行结果一致，不至于不能复现模型
-#     np.random.seed(1)
-#     torch.manual_seed(1)
-#     torch.cuda.manual_seed_all(1)
-#     torch.backends.cudnn.deterministic = True  # 保证每次结果一样
-#
-#     start_time = time.time()
-#     print("Loading ...")
-#
-#     # 加载停用词
-#     stop_words = load_stop_words('./data/stopWords.txt')
-#     # 加载数据集
-#     print("Loading data with BERT vocab...")
-#     vocab, train_data, dev_data, test_data = get_data(stop_words=stop_words)
-#     # print(f"Sample vocab items: {list(vocab.keys())[:10]}")  # 打印词表的前10个词
-#     # print(f"Vocab size: {len(vocab)}")  # 打印词表大小
-#     #
-#     # print(f"train_data sample: {train_data[:3]}")  # 查看训练数据的前几条
-#     # print(f"dev_data sample: {dev_data[:3]}")  # 查看验证数据的前几条
-#     # print(f"test_data sample: {test_data[:3]}")  # 查看测试数据的前几条
-#
-#     dataloaders = {
-#         'train': DataLoader(TextDataset(train_data), batch_size, shuffle=True, collate_fn=collate_fn),
-#         'dev': DataLoader(TextDataset(dev_data), batch_size, shuffle=True, collate_fn=collate_fn),
-#         'test': DataLoader(TextDataset(test_data), batch_size, shuffle=True, collate_fn=collate_fn)
-#     }
-#
-#     # 检查一个 batch 的输出
-#     # print("Checking DataLoader...")
-#     # for batch in dataloaders['train']:
-#     #     input_ids, attention_mask, labels = batch
-#     #     print(f"Sample input_ids: {input_ids[0]}")
-#     #     print(f"Sample attention_mask: {attention_mask[0]}")
-#     #     print(f"Sample label: {labels[0]}")
-#     #     print(
-#     #         f"Input shape: {input_ids.shape}, Attention mask shape: {attention_mask.shape}, Labels shape: {labels.shape}")
-#     #     break
-#
-#     time_dif = get_time_dif(start_time)
-#     print("Time usage:", time_dif)
-#     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-#     model = LSTMWithBERTEmbedding(hidden_size=hidden_size,
-#                                   num_classes=num_classes,
-#                                   num_layers=num_layers,
-#                                   dropout=dropout).to(device)
-#
-#     # print("Testing model forward pass...")
-#     # for batch in dataloaders['train']:
-#     #     input_ids, attention_mask, labels = batch
-#     #     input_ids, attention_mask, labels = input_ids.to(device), attention_mask.to(device), labels.to(device)
-#     #
-#     #     # 测试模型输出
-#     #     outputs = model(input_ids, attention_mask)
-#     #     print(f"Output logits shape: {outputs.shape}")  # 输出形状应该为 [batch_size, num_classes]
-#     #     print(f"Sample logits: {outputs[0]}")
-#     #     break
-#
-#     init_network(model)
-#     train(model, dataloaders)
+if __name__ == '__main__':
+    # 设置随机数种子，保证每次运行结果一致，不至于不能复现模型
+    np.random.seed(1)
+    torch.manual_seed(1)
+    torch.cuda.manual_seed_all(1)
+    torch.backends.cudnn.deterministic = True  # 保证每次结果一样
+
+    start_time = time.time()
+    print("Loading ...")
+
+    # 加载停用词
+    # stop_words = load_stop_words('./data/stopWords.txt')
+
+    # 加载数据集
+    print("Loading data with BERT vocab...")
+    vocab, train_data, dev_data, test_data, all_labels = get_data()
+
+    print(f"Sample vocab items: {list(vocab.keys())[:10]}")  # 打印词表的前10个词
+    print(f"Vocab size: {len(vocab)}")  # 打印词表大小
+
+    print(f"train_data sample: {train_data[:3]}")  # 查看训练数据的前几条
+    print(f"dev_data sample: {dev_data[:3]}")  # 查看验证数据的前几条
+    print(f"test_data sample: {test_data[:3]}")  # 查看测试数据的前几条
+
+    dataloaders = {
+        'train': DataLoader(TextDataset(train_data), batch_size, shuffle=True, collate_fn=collate_fn),
+        'dev': DataLoader(TextDataset(dev_data), batch_size, shuffle=True, collate_fn=collate_fn),
+        'test': DataLoader(TextDataset(test_data), batch_size, shuffle=True, collate_fn=collate_fn)
+    }
+
+    # 检查一个 batch 的输出
+    print("Checking DataLoader...")
+    for batch in dataloaders['train']:
+        input_ids, attention_mask, labels = batch
+        print(f"Sample input_ids: {input_ids[0]}")
+        print(f"Sample attention_mask: {attention_mask[0]}")
+        print(f"Sample label: {labels[0]}")
+        print(
+            f"Input shape: {input_ids.shape}, Attention mask shape: {attention_mask.shape}, Labels shape: {labels.shape}")
+        break
+
+    time_dif = get_time_dif(start_time)
+    print("Time usage:", time_dif)
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    model = LSTMWithBERTEmbedding(hidden_size=hidden_size,
+                                  num_classes=num_classes,
+                                  num_layers=num_layers,
+                                  dropout=dropout).to(device)
+
+    print("Testing model forward pass...")
+    for batch in dataloaders['train']:
+        input_ids, attention_mask, labels = batch
+        input_ids, attention_mask, labels = input_ids.to(device), attention_mask.to(device), labels.to(device)
+
+        # 测试模型输出
+        outputs = model(input_ids, attention_mask)
+        print(f"Output logits shape: {outputs.shape}")  # 输出形状应该为 [batch_size, num_classes]
+        print(f"Sample logits: {outputs[0]}")
+        break
+
+    init_network(model)
+    train(model, dataloaders, num_classes)
 
 
 # 直接加载模型并生成混淆矩阵
@@ -575,7 +629,7 @@ if __name__ == "__main__":
 #     # 加载停用词
 #     stop_words = load_stop_words('./data/stopWords.txt')
 #     # 加载数据集
-#     vocab, train_data, dev_data, test_data = get_data(stop_words=stop_words)
+#     vocab, train_data, dev_data, test_data, all_labels = get_data()
 #
 #     # 准备测试集 DataLoader
 #     test_dataloader = DataLoader(TextDataset(test_data), batch_size, shuffle=False, collate_fn=collate_fn)
@@ -587,7 +641,7 @@ if __name__ == "__main__":
 #                                   dropout=dropout).to(device)
 #
 #     # 加载模型权重
-#     model.load_state_dict(torch.load(save_path))
+#     model.load_state_dict(torch.load(save_model_path))
 #     model.eval()  # 设置为评估模式
 #     print("Model loaded successfully.")
 #
@@ -598,3 +652,102 @@ if __name__ == "__main__":
 #
 #     time_dif = get_time_dif(start_time)
 #     print("Time usage:", time_dif)
+
+
+###################### 以下为带可视化界面部分的注释 ######################
+
+# 模型预测函数
+# def predict_text(text, model, tokenizer, max_len, device):
+#     """
+#     使用训练好的模型对文本进行预测
+#     :param text: 输入的文本
+#     :param model: 加载的训练好的模型
+#     :param tokenizer: BERT 分词器
+#     :param max_len: 文本最大长度
+#     :param device: 设备 (CPU/GPU)
+#     :return: 分类标签
+#     """
+#     model.eval()
+#     inputs = tokenizer(
+#         text,
+#         padding="max_length",
+#         truncation=True,
+#         max_length=max_len,
+#         return_tensors="pt"
+#     )
+#     input_ids = inputs["input_ids"].to(device)
+#     attention_mask = inputs["attention_mask"].to(device)
+#     with torch.no_grad():
+#         outputs = model(input_ids, attention_mask=attention_mask)
+#         probs = softmax(outputs, dim=1).cpu().numpy()
+#     pred = np.argmax(probs, axis=1)[0]
+#     labels = ['其他', '喜好', '悲伤', '厌恶', '愤怒', '高兴']  # 根据您的模型定义
+#     return labels[pred]
+#
+# # 图形界面主函数
+# def main_gui(model, tokenizer, max_len, device):
+#     sg.theme("LightBlue")  # 设置主题
+#
+#     # 定义按钮的颜色
+#     button_color = ('white', '#87CEEB')  # 字体颜色为白色，背景色为深蓝色
+#     button_font = ("Helvetica", 15, "bold")  # 粗体字体
+#
+#     # 定义菜单栏和布局
+#     menu_def = [['Help', ['About...']]]
+#     layout = [
+#         [sg.MenubarCustom(menu_def, key='-MENU-', font='Courier 15', tearoff=True)],
+#         [sg.Text('请输入文本进行情感分析:', font=("Helvetica", 15))],
+#         [sg.Multiline(s=(60, 10), key='_INPUT_TEXT_', expand_x=True, background_color='#e9ecef', text_color='black')],
+#         [sg.Text('分析结果：', font=("Helvetica", 15)), sg.Text('     ', key='_OUTPUT_', font=("Helvetica", 15))],
+#         [
+#             sg.Button('开始', font=button_font, button_color=button_color),
+#             sg.Button('清空', font=button_font, button_color=button_color)
+#         ]
+#     ]
+#
+#     # 创建窗口
+#     window = sg.Window(
+#         '情感分析系统',
+#         layout,
+#         resizable=True,
+#         finalize=True,
+#         keep_on_top=True
+#     )
+#
+#     while True:
+#         event, values = window.read()
+#
+#         if event in (None, 'Exit'):
+#             break
+#         elif event == '开始':
+#             input_text = values['_INPUT_TEXT_'].strip()
+#             if input_text:
+#                 result = predict_text(input_text, model, tokenizer, max_len, device)
+#                 window['_OUTPUT_'].update(result)
+#             else:
+#                 window['_OUTPUT_'].update('请输入有效文本')
+#         elif event == '清空':
+#             window['_INPUT_TEXT_'].update('')
+#             window['_OUTPUT_'].update('')
+#
+#     window.close()
+#
+#
+# # 主函数（带可视化界面）
+# if __name__ == "__main__":
+#     # 加载模型和分词器
+#     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+#     tokenizer = BertTokenizer.from_pretrained('bert-base-chinese')
+#     model = LSTMWithBERTEmbedding(
+#         hidden_size=128,
+#         num_classes=6,
+#         num_layers=2,
+#         dropout=0.5
+#     )
+#     model.load_state_dict(torch.load('./saved_dict/lstm.ckpt'))
+#     model = model.to(device)
+#
+#     # 启动界面
+#     main_gui(model, tokenizer, max_len=50, device=device)
+
+
