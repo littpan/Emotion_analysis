@@ -697,7 +697,7 @@ def main_gui(model, tokenizer, max_len, device):
     layout = [
         [sg.MenubarCustom(menu_def, key='-MENU-', font='Courier 15', tearoff=True)],
         [sg.Text('请输入文本进行情感分析:', font=("Helvetica", 15))],
-        [sg.Multiline(s=(60, 10), key='_INPUT_TEXT_', expand_x=True, background_color='#e9ecef', text_color='black')],
+        [sg.Multiline(s=(60, 10), key='_INPUT_TEXT_', expand_x=True, background_color='#e9ecef', text_color='black', font=("Helvetica", 18))],
         [sg.Text('分析结果：', font=("Helvetica", 15)), sg.Text('     ', key='_OUTPUT_', font=("Helvetica", 15))],
         [
             sg.Button('开始', font=button_font, button_color=button_color),
